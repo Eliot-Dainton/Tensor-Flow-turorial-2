@@ -1,0 +1,204 @@
+import tensorflow as td
+from tensorflow import keras
+import numpy as np
+import collections
+
+import csv
+with open("mbti_1.csv",'r') as dest_f:
+    data_iter = csv.reader(dest_f, delimiter = ",", quotechar = '"')
+    data = [data for data in data_iter]
+data_array = np.asarray(data)
+
+MAX_WORDS_DICT = 88000
+NUM_COMMENTS = 8675
+TRAINING_PERCENTAGE = 0.1
+COMMENT_LENTH = 8000
+
+TRAINING_SIZE = int(NUM_COMMENTS*(1-TRAINING_PERCENTAGE))
+TESTING_SIZE = int(NUM_COMMENTS-TRAINING_SIZE)
+
+
+
+# Again formatted really nicely
+# 88000 is taking the 88000 most common words. Don't want 'fastidious' if it's counted once
+
+# Doesn't return anything so don't do data_array = ~
+np.random.shuffle(data_array)
+# 8676 datapoints so NUM_COMMENTS training.
+train_array = data_array[1:TRAINING_SIZE]
+train_data = train_array[:,1]
+train_labels = train_array[:,0]
+
+
+test_array = data_array[(NUM_COMMENTS-TESTING_SIZE):NUM_COMMENTS]
+test_data = test_array[:,1]
+test_labels = test_array[:,0]
+
+def encode(text):
+	# Starting with the <START> tag
+	encoded_list = [1]
+	for word in text:
+		# If we know the word
+		if word.lower() in reverse_word_dict:
+			# Lower the word
+			encoded_list.append(reverse_word_dict[word.lower()])
+		else:
+			# <UKN>
+			encoded_list.append(2)
+
+	return encoded_list
+
+def decode(text):
+	# Create a string of the decoded words, '?' if we don't know the word
+	return " ".join([word_dict.get(i, " ? ") for i in text])
+
+
+################################## MAKING DICT 
+# Count the frequency of each word
+	# In training data
+counterDict= {}
+for line in range(TRAINING_SIZE - 1):
+	# Going to treat exclamation and question marks as their own words
+	clean_line = train_data[line].replace(".","").replace(",","").replace(")","").replace("(","").replace("|"," ").replace("?"," ? ").replace("!"," ! ").replace("\'","").replace("\"","").replace(":","").replace("/","").lower().strip()
+
+	# Needs a split or else it does letters
+	for word in clean_line.split():
+
+		if word not in counterDict:
+			counterDict[word] = 1
+        else:
+            counterDict[word] = counterDict[word] + 1
+
+    # In testing data
+for line in range(TESTING_SIZE - 1):
+
+	clean_line = test_data[line].replace(".","").replace(",","").replace(")","").replace("(","").replace("|"," ").replace("?"," ? ").replace("!"," ! ").replace("\'","").replace("\"","").replace(":","").replace("/","").lower().strip()
+
+	# Needs a split or else it does letters
+	for word in clean_line.split():
+
+		if word not in counterDict:
+			counterDict[word] = 1
+        else:
+            counterDict[word] = counterDict[word] + 1
+
+# A dictionary of each word and the number of times it occurs
+word_counter = collections.Counter(counterDict)
+
+# A dictionary filled in order with the MAX_WORDS_DICT most common words
+most_common_dict = word_counter.most_common(MAX_WORDS_DICT)
+
+# Creating the word dictionary with some space at beginning for default tags
+word_dict = dict([(k+3, most_common_dict[k][0]) for k in range(MAX_WORDS_DICT - 1)])
+word_dict[0] = "<PAD>"
+word_dict[1] = "<START>"
+word_dict[2] = "<UKN>"
+word_dict[3] = "<UNUSED>"
+
+##################################
+
+# A word pointing at a number (for encoding)
+reverse_word_dict = dict([(value,key) for (key,value) in word_dict.items()])
+
+class_dict = {'I': 0, 'E':1, 'N': 0, 'S':1, 'T':0, 'F':1, 'J':0, 'P':1}
+
+
+
+# Now need to make all data numerical. Using a list of lists.
+	# Using the word_dict to make words into numbers
+num_train_data = [encode(train_data[line]) for line in range(TRAINING_SIZE - 1)]
+	# Making 'INTJ' into ['I','N','T','J'] into [0, 1, 0, 0]
+num_train_labels = [[class_dict.get(char, 0) for char in train_labels[line]] for line in range(TRAINING_SIZE - 1)]
+
+num_test_data = [encode(test_data[line]) for line in range(TESTING_SIZE - 1)]
+num_test_labels = [[int(class_dict.get(char, 0)) for char in test_labels[line]] for line in range(TESTING_SIZE - 1)]
+
+# Adding padding and a max number
+num_train_data = keras.preprocessing.sequence.pad_sequences(num_train_data, value=reverse_word_dict["<PAD>"], padding="post", maxlen=COMMENT_LENTH)
+num_test_data = keras.preprocessing.sequence.pad_sequences(num_test_data, value=reverse_word_dict["<PAD>"], padding="post", maxlen=COMMENT_LENTH)
+
+
+##################################### Model making time
+
+model = keras.Sequential()
+	# Initially create MAX_WORDS_DICT word vectors, one for each word
+	# Scattered in whatever dimensional space (this case 16) randomly
+	# Then, we look at the context they're used in and try to 
+	# group together similar words e.g. GOOD and GREAT
+	# which are in reality 25 and 399 or something
+	# Then, we can pass in these condensed word groups as the data
+	# for the next layers.
+model.add(keras.layers.Embedding(MAX_WORDS_DICT,16)) 
+	# Takes the average of all 16 dimensions and condenses into 1. 
+	# So takes all 8000 words and turns each into 1 number 
+model.add(keras.layers.GlobalAveragePooling1D())
+model.add(keras.layers.Dense(8, activation="relu"))
+model.add(keras.layers.Dense(8, activation="relu"))
+# Introverted or extraverted... [0,1]
+model.add(keras.layers.Dense(4, activation="sigmoid"))
+
+model.summary()
+
+# binary_crossentropy calculates loss well for [0,1] from sigmoid
+model.compile(optimizer="adam", loss="binary_crossentropy", metrics=["accuracy"])
+
+# Need numpy arrays, not lists
+num_train_data = np.array(num_train_data)
+num_train_labels = np.array(num_train_labels)
+
+num_test_data = np.array(num_test_data)
+num_test_labels = np.array(num_test_labels)
+
+fitModel = model.fit(num_train_data, num_train_labels, epochs=20, batch_size=500, validation_split=0.01, verbose=1)
+
+#print(test_data, test_labels)
+# print(num_train_data, num_train_labels)
+# print(len(num_test_data), len(num_test_labels))
+# print(num_test_data, num_test_labels)
+
+
+results = model.evaluate(num_test_data, num_test_labels)
+print(results)
+
+model.save("mbti_model_working_small.h5")
+
+
+# model = keras.models.load_model("mbti_model_1.h5") 
+
+def get_results(arg_list = []):
+    string = " "
+    # print("arglist", arg_list)
+    string+=(("I","E")[arg_list[0]>0.5])
+    string+=(("N","S")[arg_list[1]>0.5])
+    string+=(("T","F")[arg_list[2]>0.5])
+    string+=(("J","P")[arg_list[3]>0.5])
+    # print("String ", string)
+    return string
+
+def text_to_predicted(text):
+	text = text.replace(".","").replace(",","").replace(")","").replace("(","").replace("|"," ").replace("?"," ? ").replace("!"," ! ").replace("\'","").replace("\"","").replace(":","").replace("/","").lower().strip()
+	text = encode(text)
+	text = keras.preprocessing.sequence.pad_sequences([text], value=reverse_word_dict["<PAD>"], padding="post", maxlen=COMMENT_LENTH)
+	predict = model.predict(text)
+	return predict.tolist()[0]
+
+# # To test an individual review:
+# with open("mbti_test_1.txt") as f:
+# 	# For each review
+# 	for line in f.readlines():
+# 		predict = text_to_predicted(line)
+# 		# print("BABABA ", predict.tolist())
+# 		# predict_list = predict.tolist()
+# 		# print(predict_list[0])
+
+# 		print("Text:\n" + line + "\nand the author: " + get_results(predict) + " with ", predict)
+
+
+for x in range(200):
+	line = test_data[x]
+	predict = text_to_predicted(line)
+	# print("Text:\n" + test_data[x] + "\nand the author: " + test_labels[x] + " guessed as " + get_results(predict) + " with ", predict)
+	print("Author: " + test_labels[x] + " guessed as " + get_results(predict) + " with ", predict)
+
+
+
